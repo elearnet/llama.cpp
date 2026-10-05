@@ -386,6 +386,7 @@ class MODEL_ARCH(IntEnum):
     REFACT           = auto()
     BERT             = auto()
     MODERN_BERT      = auto()
+    DEBERTA          = auto()#deberta-v2 support
     NOMIC_BERT       = auto()
     NOMIC_BERT_MOE   = auto()
     NEO_BERT         = auto()
@@ -517,6 +518,8 @@ class MODEL_TENSOR(IntEnum):
     TOKEN_EMBD_NORM      = auto()
     TOKEN_TYPES          = auto()
     POS_EMBD             = auto()
+    REL_EMBD             = auto() #deberta-v2 support: deberta shared relative position embeddings
+    REL_EMBD_NORM        = auto() #deberta-v2 support: deberta LayerNorm for rel_embeddings
     OUTPUT               = auto()
     DENSE_2_OUT          = auto() # embeddinggemma 2_Dense
     DENSE_3_OUT          = auto() # embeddinggemma 3_Dense
@@ -872,6 +875,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.REFACT:           "refact",
     MODEL_ARCH.BERT:             "bert",
     MODEL_ARCH.MODERN_BERT:      "modern-bert",
+    MODEL_ARCH.DEBERTA:          "deberta",#deberta-v2 support
     MODEL_ARCH.NOMIC_BERT:       "nomic-bert",
     MODEL_ARCH.NOMIC_BERT_MOE:   "nomic-bert-moe",
     MODEL_ARCH.NEO_BERT:         "neo-bert",
@@ -1002,6 +1006,8 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.TOKEN_EMBD_NORM:           "token_embd_norm",
     MODEL_TENSOR.TOKEN_TYPES:               "token_types",
     MODEL_TENSOR.POS_EMBD:                  "position_embd",
+    MODEL_TENSOR.REL_EMBD:                  "rel_embd",#deberta-v2 support bg
+    MODEL_TENSOR.REL_EMBD_NORM:             "rel_embd_norm",#deberta-v2 support ed
     MODEL_TENSOR.OUTPUT_NORM:               "output_norm",
     MODEL_TENSOR.OUTPUT:                    "output",
     MODEL_TENSOR.DENSE_2_OUT:                "dense_2", # embeddinggemma 2_Dense
@@ -1649,6 +1655,22 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.CLS_OUT,
         MODEL_TENSOR.CLS_NORM,
     ],
+    #deberta-v2 support bg
+    MODEL_ARCH.DEBERTA: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.TOKEN_EMBD_NORM,
+        MODEL_TENSOR.REL_EMBD,
+        MODEL_TENSOR.REL_EMBD_NORM,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.ATTN_OUT_NORM,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.LAYER_OUT_NORM,
+    ],
+    #deberta-v2 support ed
     MODEL_ARCH.NOMIC_BERT: [
         MODEL_TENSOR.TOKEN_EMBD,
         MODEL_TENSOR.TOKEN_EMBD_NORM,

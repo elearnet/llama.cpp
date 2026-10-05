@@ -1018,7 +1018,11 @@ class TextModel(ModelBase):
         if "text_config" in self.hparams:
             # move the text_config to the root level
             self.hparams = {**self.hparams, **self.hparams["text_config"]}
-
+        #deberta-v2 support bg
+        elif (self.dir_model / "encoder_config" / "config.json").is_file():
+            with open(self.dir_model / "encoder_config" / "config.json", "r", encoding="utf-8") as f:
+                self.hparams = {**self.hparams, **json.load(f)}
+        #deberta-v2 support ed
         self.block_count = self.find_hparam(["n_layers", "num_hidden_layers", "n_layer", "num_layers"])
         self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
 
@@ -12562,6 +12566,159 @@ class ModernBertModel(BertModel):
 
         yield from super().modify_tensors(data_torch, name, bid)
 
+#deberta-v2 support bg
+@ModelBase.register("DebertaModel", "DebertaForMaskedLM", "DebertaForSequenceClassification",
+                    "DebertaV2Model", "DebertaV2ForMaskedLM", "DebertaV2ForSequenceClassification",
+                    "BoundaryExtractor")
+class DebertaModel(TextModel):
+    model_arch = gguf.MODEL_ARCH.DEBERTA
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        enc_cfg_path = self.dir_model / "encoder_config" / "config.json"
+        if enc_cfg_path.is_file():
+            with open(enc_cfg_path, "r", encoding="utf-8") as f:
+                self.enc_hparams = json.load(f)
+        else:
+            self.enc_hparams = self.hparams
+
+    def set_gguf_parameters(self):
+        cfg = self.enc_hparams
+        self.gguf_writer.add_embedding_length(cfg["hidden_size"])
+        self.gguf_writer.add_feed_forward_length(cfg["intermediate_size"])
+        self.gguf_writer.add_head_count(cfg["num_attention_heads"])
+        self.gguf_writer.add_head_count_kv(cfg["num_attention_heads"])
+        self.gguf_writer.add_block_count(cfg["num_hidden_layers"])
+        self.gguf_writer.add_context_length(cfg.get("max_position_embeddings", 512))
+        self.gguf_writer.add_causal_attention(False)
+        self.gguf_writer.add_layer_norm_eps(cfg.get("layer_norm_eps", 1e-7))
+
+        pos_buckets = cfg.get("position_buckets", 256)
+        max_rel_pos = cfg.get("max_relative_positions", -1)
+        if max_rel_pos < 1:
+            max_rel_pos = cfg.get("max_position_embeddings", 512)
+
+        self.gguf_writer.add_relative_attn_buckets_count(pos_buckets)
+        self.gguf_writer.add_uint32("deberta.attention.max_relative_positions", max_rel_pos)
+        self.gguf_writer.add_file_type(self.ftype)
+
+    def set_vocab(self):
+        tok_json_path = self.dir_model / "tokenizer.json"
+        if not tok_json_path.is_file():
+            return self._set_vocab_sentencepiece()
+
+        with open(tok_json_path, "r", encoding="utf-8") as fp:
+            tokenizer_json = json.load(fp)
+
+        tokenizer_config_path = self.dir_model / "tokenizer_config.json"
+        tokenizer_config_json = {}
+        if tokenizer_config_path.is_file():
+            with open(tokenizer_config_path, "r", encoding="utf-8") as fp:
+                tokenizer_config_json = json.load(fp)
+
+        vocab_list = tokenizer_json["model"]["vocab"]  # list of [piece, score]
+        vocab_size = len(vocab_list)
+
+        added_tokens = tokenizer_json.get("added_tokens", [])
+        max_id = max(vocab_size - 1, max((item["id"] for item in added_tokens), default=0))
+        total_size = max(self.enc_hparams.get("vocab_size", 0), max_id + 1)
+        tokens: list[bytes] = [f"[PAD{i}]".encode("utf-8") for i in range(total_size)]
+        scores: list[float] = [-10000.0] * total_size
+        toktypes: list[int] = [SentencePieceTokenTypes.UNUSED] * total_size
+
+        unk_token_id = tokenizer_config_json.get("unk_id", 3)
+
+        for token_id, (piece, score) in enumerate(vocab_list):
+            tokens[token_id] = piece.encode("utf-8")
+            scores[token_id] = score
+            if token_id == unk_token_id:
+                toktypes[token_id] = SentencePieceTokenTypes.UNKNOWN
+            else:
+                toktypes[token_id] = SentencePieceTokenTypes.NORMAL
+
+        for item in added_tokens:
+            token_id = item["id"]
+            piece = item["content"]
+            tokens[token_id] = piece.encode("utf-8")
+            scores[token_id] = 0.0
+            if item.get("special", False):
+                toktypes[token_id] = SentencePieceTokenTypes.CONTROL
+            else:
+                toktypes[token_id] = SentencePieceTokenTypes.USER_DEFINED
+
+        self.gguf_writer.add_tokenizer_model("t5")
+        self.gguf_writer.add_tokenizer_pre("default")
+        self.gguf_writer.add_token_list(tokens)
+        self.gguf_writer.add_token_scores(scores)
+        self.gguf_writer.add_token_types(toktypes)
+        self.gguf_writer.add_add_space_prefix(tokenizer_config_json.get("add_prefix_space", True))
+
+        special_vocab = gguf.SpecialVocab(self.dir_model, n_vocab=len(tokens))
+        special_vocab.add_to_gguf(self.gguf_writer)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        original_name = name
+
+        if name.startswith("encoder.encoder."):
+            name = name[len("encoder.encoder."):]
+        elif name.startswith("encoder."):
+            name = name[len("encoder."):]
+        elif name.startswith("deberta.encoder."):
+            name = name[len("deberta.encoder."):]
+        elif name.startswith("deberta."):
+            name = name[len("deberta."):]
+
+        if name == "embeddings.word_embeddings.weight":
+            yield "token_embd.weight", data_torch
+            return
+        if name == "embeddings.LayerNorm.weight":
+            yield "token_embd_norm.weight", data_torch
+            return
+        if name == "embeddings.LayerNorm.bias":
+            yield "token_embd_norm.bias", data_torch
+            return
+        if name == "rel_embeddings.weight":
+            yield "rel_embd.weight", data_torch
+            return
+        if name == "LayerNorm.weight":
+            yield "rel_embd_norm.weight", data_torch
+            return
+        if name == "LayerNorm.bias":
+            yield "rel_embd_norm.bias", data_torch
+            return
+
+        if name.startswith("layer."):
+            parts = name.split(".")
+            layer_idx = parts[1]
+            sub = ".".join(parts[2:])
+
+            layer_map = {
+                "attention.self.query_proj.weight": f"blk.{layer_idx}.attn_q.weight",
+                "attention.self.query_proj.bias":   f"blk.{layer_idx}.attn_q.bias",
+                "attention.self.key_proj.weight":   f"blk.{layer_idx}.attn_k.weight",
+                "attention.self.key_proj.bias":     f"blk.{layer_idx}.attn_k.bias",
+                "attention.self.value_proj.weight": f"blk.{layer_idx}.attn_v.weight",
+                "attention.self.value_proj.bias":   f"blk.{layer_idx}.attn_v.bias",
+                "attention.output.dense.weight":    f"blk.{layer_idx}.attn_output.weight",
+                "attention.output.dense.bias":      f"blk.{layer_idx}.attn_output.bias",
+                "attention.output.LayerNorm.weight": f"blk.{layer_idx}.attn_output_norm.weight",
+                "attention.output.LayerNorm.bias":   f"blk.{layer_idx}.attn_output_norm.bias",
+                "intermediate.dense.weight":        f"blk.{layer_idx}.ffn_up.weight",
+                "intermediate.dense.bias":          f"blk.{layer_idx}.ffn_up.bias",
+                "output.dense.weight":              f"blk.{layer_idx}.ffn_down.weight",
+                "output.dense.bias":                f"blk.{layer_idx}.ffn_down.bias",
+                "output.LayerNorm.weight":          f"blk.{layer_idx}.layer_output_norm.weight",
+                "output.LayerNorm.bias":            f"blk.{layer_idx}.layer_output_norm.bias",
+            }
+            if sub in layer_map:
+                yield layer_map[sub], data_torch
+                return
+
+        # Pass-through for boundary head / extra task tensors
+        if not original_name.startswith("encoder.") and not original_name.startswith("deberta."):
+            yield original_name, data_torch
+            return
+#deberta-v2 support ed
 
 @ModelBase.register("ApertusForCausalLM")
 class ApertusModel(LlamaModel):

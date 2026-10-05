@@ -1134,6 +1134,15 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     default: type = LLM_TYPE_UNKNOWN;
                 }
             } break;
+            //deberta-v2 support bg
+        case LLM_ARCH_DEBERTA:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_EPS,        hparams.f_norm_eps);
+                ml.get_key(LLM_KV_ATTENTION_RELATIVE_BUCKETS_COUNT, hparams.n_rel_attn_bkts, false);
+                hparams.max_rel_pos = hparams.n_ctx_train;
+                ml.get_key("deberta.attention.max_relative_positions", hparams.max_rel_pos, false);
+            } break;
+        //deberta-v2 support ed
         case LLM_ARCH_MODERN_BERT:
             {
                 const bool found_swa = ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa, false);
@@ -2807,6 +2816,12 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
                 ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS,    hparams.rope_sections, 4, true);
 
+                // NextN/MTP parameters
+                ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS,              hparams.nextn_predict_layers, false);
+                if (hparams.nextn_predict_layers > 0) {
+                    hparams.n_layer_kv_from_start = hparams.n_layer - hparams.nextn_predict_layers;
+                }
+
                 // Load linear attention (gated delta net) parameters
                 ml.get_key(LLM_KV_SSM_CONV_KERNEL,    hparams.ssm_d_conv);
                 ml.get_key(LLM_KV_SSM_INNER_SIZE,     hparams.ssm_d_inner);
@@ -2819,7 +2834,11 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     uint32_t full_attn_interval = 4;
                     ml.get_key(LLM_KV_FULL_ATTENTION_INTERVAL, full_attn_interval, false);
                     for (uint32_t i = 0; i < hparams.n_layer; ++i) {
-                        hparams.recurrent_layer_arr[i] = ((i + 1) % full_attn_interval != 0);
+                        if (hparams.nextn_predict_layers > 0 && i >= hparams.n_layer - hparams.nextn_predict_layers) {
+                            hparams.recurrent_layer_arr[i] = false; // NextN layers are attention layers
+                        } else {
+                            hparams.recurrent_layer_arr[i] = ((i + 1) % full_attn_interval != 0);
+                        }
                     }
                 }
 
@@ -3656,6 +3675,39 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.layer_out_norm_b = create_tensor(tn(LLM_TENSOR_LAYER_OUT_NORM, "bias", i),   {n_embd}, 0);
                     }
                 } break;
+            //deberta-v2 support bg
+            case LLM_ARCH_DEBERTA:
+                {
+                    tok_embd   = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD,      "weight"), {n_embd, n_vocab}, 0);
+                    tok_norm   = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD_NORM, "weight", 0), {n_embd}, 0);
+                    tok_norm_b = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD_NORM, "bias",   0), {n_embd}, 0);
+
+                    const int64_t n_rel_rows = hparams.n_rel_attn_bkts * 2;
+                    rel_embd        = create_tensor(tn(LLM_TENSOR_REL_EMBD,      "weight"), {n_embd, n_rel_rows}, 0);
+                    rel_embd_norm   = create_tensor(tn(LLM_TENSOR_REL_EMBD_NORM, "weight"), {n_embd}, 0);
+                    rel_embd_norm_b = create_tensor(tn(LLM_TENSOR_REL_EMBD_NORM, "bias"),   {n_embd}, 0);
+
+                    for (int i = 0; i < n_layer; ++i) {
+                        auto & layer = layers[i];
+
+                        create_tensor_qkv(layer, i, n_embd, n_embd, n_embd, n_embd, 0);
+
+                        layer.wo   = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd, n_embd}, 0);
+                        layer.wo_b = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "bias",   i), {n_embd}, TENSOR_NOT_REQUIRED);
+
+                        layer.attn_out_norm   = create_tensor(tn(LLM_TENSOR_ATTN_OUT_NORM, "weight", i), {n_embd}, 0);
+                        layer.attn_out_norm_b = create_tensor(tn(LLM_TENSOR_ATTN_OUT_NORM, "bias",   i), {n_embd}, 0);
+
+                        layer.ffn_up     = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd, n_ff}, 0);
+                        layer.ffn_up_b   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "bias",   i), {n_ff}, TENSOR_NOT_REQUIRED);
+                        layer.ffn_down   = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {n_ff, n_embd}, 0);
+                        layer.ffn_down_b = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "bias",   i), {n_embd}, TENSOR_NOT_REQUIRED);
+
+                        layer.layer_out_norm   = create_tensor(tn(LLM_TENSOR_LAYER_OUT_NORM, "weight", i), {n_embd}, 0);
+                        layer.layer_out_norm_b = create_tensor(tn(LLM_TENSOR_LAYER_OUT_NORM, "bias",   i), {n_embd}, 0);
+                    }
+                } break;
+            //deberta-v2 support ed
             case LLM_ARCH_MODERN_BERT:
                 {
                     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
@@ -7622,36 +7674,53 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     const int64_t conv_dim   = key_dim * 2 + value_dim;
 
                     for (int i = 0; i < n_layer; ++i) {
+                        int flags = 0;
+                        if (hparams.nextn_predict_layers > 0 && static_cast<uint32_t>(i) >= n_layer - hparams.nextn_predict_layers) {
+                            flags |= TENSOR_SKIP;
+                        }
+
                         auto & layer = layers[i];
 
-                        layer.attn_norm      = create_tensor(tn(LLM_TENSOR_ATTN_NORM,      "weight", i), { n_embd }, 0);
-                        layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), { n_embd }, 0);
+                        layer.attn_norm      = create_tensor(tn(LLM_TENSOR_ATTN_NORM,      "weight", i), { n_embd }, flags);
+                        layer.attn_post_norm = create_tensor(tn(LLM_TENSOR_ATTN_POST_NORM, "weight", i), { n_embd }, flags);
 
                         if (!hparams.is_recurrent(i)) {
                             // Attention layers
-                            create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, 0);
-                            layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), { n_embd_head_k * n_head, n_embd }, 0);
+                            create_tensor_qkv(layer, i, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, flags);
+                            layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), { n_embd_head_k * n_head, n_embd }, flags);
 
                             // Q/K normalization for attention layers
-                            layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), { n_embd_head_k }, 0);
-                            layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), { n_embd_head_k }, 0);
+                            layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), { n_embd_head_k }, flags);
+                            layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), { n_embd_head_k }, flags);
                         } else {
                             // Linear attention (gated delta net) specific tensors
                             // Create tensors with calculated dimensions
-                            layer.wqkv           = create_tensor(tn(LLM_TENSOR_ATTN_QKV,       "weight", i), { n_embd, key_dim * 2 + value_dim }, TENSOR_NOT_REQUIRED);
-                            layer.wqkv_gate      = create_tensor(tn(LLM_TENSOR_ATTN_GATE,      "weight", i), { n_embd, value_dim }, TENSOR_NOT_REQUIRED);
-                            layer.ssm_conv1d     = create_tensor(tn(LLM_TENSOR_SSM_CONV1D,     "weight", i), { hparams.ssm_d_conv, conv_dim }, 0);
-                            layer.ssm_dt         = create_tensor(tn(LLM_TENSOR_SSM_DT,         "bias",   i), { hparams.ssm_dt_rank }, 0);
-                            layer.ssm_a          = create_tensor(tn(LLM_TENSOR_SSM_A_NOSCAN,             i), { hparams.ssm_dt_rank }, 0);
-                            layer.ssm_beta       = create_tensor(tn(LLM_TENSOR_SSM_BETA,       "weight", i), { n_embd, n_v_heads }, 0);
-                            layer.ssm_alpha      = create_tensor(tn(LLM_TENSOR_SSM_ALPHA,      "weight", i), { n_embd, n_v_heads }, 0);
-                            layer.ssm_norm       = create_tensor(tn(LLM_TENSOR_SSM_NORM,       "weight", i), { head_v_dim }, 0);
-                            layer.ssm_out        = create_tensor(tn(LLM_TENSOR_SSM_OUT,        "weight", i), { value_dim, n_embd }, 0);
+                            layer.wqkv           = create_tensor(tn(LLM_TENSOR_ATTN_QKV,       "weight", i), { n_embd, key_dim * 2 + value_dim }, TENSOR_NOT_REQUIRED | flags);
+                            layer.wqkv_gate      = create_tensor(tn(LLM_TENSOR_ATTN_GATE,      "weight", i), { n_embd, value_dim }, TENSOR_NOT_REQUIRED | flags);
+                            layer.ssm_conv1d     = create_tensor(tn(LLM_TENSOR_SSM_CONV1D,     "weight", i), { hparams.ssm_d_conv, conv_dim }, flags);
+                            layer.ssm_dt         = create_tensor(tn(LLM_TENSOR_SSM_DT,         "bias",   i), { hparams.ssm_dt_rank }, flags);
+                            layer.ssm_a          = create_tensor(tn(LLM_TENSOR_SSM_A_NOSCAN,             i), { hparams.ssm_dt_rank }, flags);
+                            layer.ssm_beta       = create_tensor(tn(LLM_TENSOR_SSM_BETA,       "weight", i), { n_embd, n_v_heads }, flags);
+                            layer.ssm_alpha      = create_tensor(tn(LLM_TENSOR_SSM_ALPHA,      "weight", i), { n_embd, n_v_heads }, flags);
+                            layer.ssm_norm       = create_tensor(tn(LLM_TENSOR_SSM_NORM,       "weight", i), { head_v_dim }, flags);
+                            layer.ssm_out        = create_tensor(tn(LLM_TENSOR_SSM_OUT,        "weight", i), { value_dim, n_embd }, flags);
                         }
 
-                        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
-                        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
-                        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+                        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, flags);
+                        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, flags);
+                        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, flags);
+
+                        // NextN/MTP tensors
+                        if (hparams.nextn_predict_layers > 0 && static_cast<uint32_t>(i) >= n_layer - hparams.nextn_predict_layers) {
+                            layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", i), { 2 * n_embd, n_embd }, flags);
+                            layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM, "weight", i), { n_embd }, flags);
+                            layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM, "weight", i), { n_embd }, flags);
+
+                            // Optional tensors
+                            layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), { n_embd }, flags | TENSOR_NOT_REQUIRED);
+                            layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS, "weight", i), { n_embd, n_vocab }, flags | TENSOR_NOT_REQUIRED);
+                            layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", i), { n_embd, n_vocab }, flags | TENSOR_NOT_REQUIRED);
+                        }
                     }
                 } break;
             case LLM_ARCH_MIMO2:
@@ -7918,6 +7987,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    ml.create_remaining_tensors(hparams, &pimpl->cpu_buft_list);//deberta-v2 support
     ml.done_getting_tensors();
 
     // populate tensors_by_name
@@ -8428,6 +8498,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
         // Models that need specific instantiation should be handled in the
         // switch statement
         case LLM_ARCH_BERT:
+        case LLM_ARCH_DEBERTA://deberta-v2 support
         case LLM_ARCH_JINA_BERT_V2:
         case LLM_ARCH_JINA_BERT_V3:
         case LLM_ARCH_NOMIC_BERT:
@@ -8471,6 +8542,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         };
                         filter_recr = [&](int32_t il) {
                             return hparams.is_recurrent(il) && hparams.n_ff(il) == 0;
+                        };
+                    } else if (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE) {
+                        filter_attn = [&](int32_t il) {
+                            return !hparams.is_recurrent(il) && (hparams.nextn_predict_layers == 0 || (uint32_t)il < hparams.n_layer - hparams.nextn_predict_layers);
+                        };
+                        filter_recr = [&](int32_t il) {
+                            return hparams.is_recurrent(il) && (hparams.nextn_predict_layers == 0 || (uint32_t)il < hparams.n_layer - hparams.nextn_predict_layers);
                         };
                     }
 
@@ -8627,6 +8705,12 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             {
                 llm = std::make_unique<llm_build_modern_bert>(*this, params);
             } break;
+        //deberta-v2 support
+        case LLM_ARCH_DEBERTA:
+            {
+                llm = std::make_unique<llm_build_deberta>(*this, params);
+            } break;
+        //deberta-v2 support ed
         case LLM_ARCH_NEO_BERT:
             {
                 llm = std::make_unique<llm_build_neo_bert>(*this, params);
@@ -9261,6 +9345,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_GROK:
         case LLM_ARCH_DBRX:
         case LLM_ARCH_BERT:
+        case LLM_ARCH_DEBERTA://deberta-v2 support
         case LLM_ARCH_JINA_BERT_V3:
         case LLM_ARCH_MODERN_BERT:
         case LLM_ARCH_NOMIC_BERT:
@@ -9472,6 +9557,19 @@ bool llama_model_is_diffusion(const llama_model * model) {
 const std::vector<std::pair<std::string, ggml_tensor *>> & llama_internal_get_tensor_map(const llama_model * model) {
     return model->tensors_by_name;
 }
+//deberta-v2 support bg
+struct ggml_tensor * llama_model_get_tensor(const struct llama_model * model, const char * name) {
+    if (!model || !name) {
+        return nullptr;
+    }
+    for (const auto & kv : model->tensors_by_name) {
+        if (kv.first == name) {
+            return kv.second;
+        }
+    }
+    return nullptr;
+}
+//deberta-v2 support ed
 
 int32_t llama_model_n_expert(const struct llama_model * model) {
     return model->hparams.n_expert;

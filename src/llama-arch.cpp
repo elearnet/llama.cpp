@@ -22,6 +22,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_REFACT,           "refact"           },
     { LLM_ARCH_BERT,             "bert"             },
     { LLM_ARCH_MODERN_BERT,      "modern-bert"      },
+    { LLM_ARCH_DEBERTA,          "deberta"          },//deberta-v2 support
     { LLM_ARCH_NOMIC_BERT,       "nomic-bert"       },
     { LLM_ARCH_NOMIC_BERT_MOE,   "nomic-bert-moe"   },
     { LLM_ARCH_NEO_BERT,         "neo-bert"         },
@@ -384,6 +385,8 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_LAYER_OUT_SCALE,                        "blk.%d.layer_output_scale" },
     { LLM_TENSOR_ATTN_OUT_NORM,                          "blk.%d.attn_output_norm" },
     { LLM_TENSOR_POS_EMBD,                               "position_embd" },
+    { LLM_TENSOR_REL_EMBD,                               "rel_embd" },//deberta-v2 support bg
+    { LLM_TENSOR_REL_EMBD_NORM,                          "rel_embd_norm" },//deberta-v2 support ed
     { LLM_TENSOR_FFN_ACT,                                "blk.%d.ffn.act" },
     { LLM_TENSOR_TOKEN_EMBD_NORM,                        "token_embd_norm" },
     { LLM_TENSOR_TOKEN_TYPES,                            "token_types" },
@@ -562,6 +565,10 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
 static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_TOKEN_EMBD,                 {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
     {LLM_TENSOR_POS_EMBD,                   {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
+    //deberta-v2 support bg
+    {LLM_TENSOR_REL_EMBD,                   {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
+    {LLM_TENSOR_REL_EMBD_NORM,              {LLM_TENSOR_LAYER_INPUT,     GGML_OP_MUL}},
+    //deberta-v2 support ed
     {LLM_TENSOR_TOKEN_TYPES,                {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
     {LLM_TENSOR_TOKEN_EMBD_NORM,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},  // do the norms on the first layer (not the input layer)
     {LLM_TENSOR_OUTPUT,                     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},

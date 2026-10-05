@@ -162,6 +162,42 @@ void llm_graph_input_pos_bucket::set_input(const llama_ubatch * ubatch) {
         }
     }
 }
+//deberta-v2 support bg
+void llm_graph_input_deberta_rel_pos::set_input(const llama_ubatch * ubatch) {
+    const int64_t n_tokens = ubatch->n_tokens;
+    const int32_t bkt_size = hparams.n_rel_attn_bkts > 0 ? (int32_t)hparams.n_rel_attn_bkts : 256;
+    const int32_t max_pos  = hparams.max_rel_pos     > 0 ? (int32_t)hparams.max_rel_pos     : 512;
+    const int32_t n_rel    = bkt_size * 2;
+
+    if (c2p_idx) {
+        std::vector<int32_t> data(n_tokens * n_tokens);
+        for (int i = 0; i < n_tokens; ++i) {
+            int32_t pos_i = ubatch->pos ? (int32_t)ubatch->pos[i] : i;
+            for (int j = 0; j < n_tokens; ++j) {
+                int32_t pos_j = ubatch->pos ? (int32_t)ubatch->pos[j] : j;
+                int32_t rel = pos_i - pos_j;
+                int32_t b   = llama_deberta_relative_position_bucket(rel, bkt_size, max_pos);
+                data[i * n_tokens + j] = i * n_rel + b;
+            }
+        }
+        ggml_backend_tensor_set(c2p_idx, data.data(), 0, data.size() * sizeof(int32_t));
+    }
+
+    if (p2c_idx) {
+        std::vector<int32_t> data(n_tokens * n_tokens);
+        for (int i = 0; i < n_tokens; ++i) {
+            int32_t pos_i = ubatch->pos ? (int32_t)ubatch->pos[i] : i;
+            for (int j = 0; j < n_tokens; ++j) {
+                int32_t pos_j = ubatch->pos ? (int32_t)ubatch->pos[j] : j;
+                int32_t rel = pos_i - pos_j;
+                int32_t b   = llama_deberta_relative_position_bucket(rel, bkt_size, max_pos);
+                data[i * n_tokens + j] = j * n_rel + b;
+            }
+        }
+        ggml_backend_tensor_set(p2c_idx, data.data(), 0, data.size() * sizeof(int32_t));
+    }
+}
+//deberta-v2 support ed
 
 void llm_graph_input_pos_bucket_kv::set_input(const llama_ubatch * ubatch) {
     if (pos_bucket) {
@@ -1913,7 +1949,24 @@ ggml_tensor * llm_graph_context::build_inp_pos_bucket_dec() const {
 
     return cur;
 }
+//deberta-v2 support bg
+std::pair<ggml_tensor *, ggml_tensor *> llm_graph_context::build_inp_deberta_rel_pos() const {
+    auto inp = std::make_unique<llm_graph_input_deberta_rel_pos>(hparams);
 
+    inp->c2p_idx = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens * n_tokens);
+    ggml_set_input(inp->c2p_idx);
+
+    inp->p2c_idx = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens * n_tokens);
+    ggml_set_input(inp->p2c_idx);
+
+    auto * c2p = inp->c2p_idx;
+    auto * p2c = inp->p2c_idx;
+
+    res->add_input(std::move(inp));
+
+    return { c2p, p2c };
+}
+//deberta-v2 support ed
 ggml_tensor * llm_graph_context::build_pos_bias(ggml_tensor * pos_bucket, ggml_tensor * attn_rel_b) const {
     ggml_tensor * pos_bucket_1d = ggml_reshape_1d(ctx0, pos_bucket, pos_bucket->ne[0] * pos_bucket->ne[1]);
     cb(pos_bucket_1d, "pos_bucket_1d", -1);
@@ -2922,3 +2975,26 @@ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buck
 
     return relative_bucket;
 }
+//deberta-v2 support bg
+int32_t llama_deberta_relative_position_bucket(int32_t rel_pos, int32_t bucket_size, int32_t max_position) {
+    const int32_t mid = bucket_size / 2;
+    int32_t sign = (rel_pos > 0) ? 1 : ((rel_pos < 0) ? -1 : 0);
+    int32_t abs_pos = std::abs(rel_pos);
+
+    int32_t bucket_pos;
+    if (abs_pos <= mid) {
+        bucket_pos = rel_pos;
+    } else {
+        float log_pos = std::ceil(
+            std::log((float)abs_pos / (float)mid) /
+            std::log((float)(max_position - 1) / (float)mid) *
+            (float)(mid - 1)
+        ) + (float)mid;
+        bucket_pos = (int32_t)(sign * log_pos);
+    }
+
+    int32_t idx = bucket_pos + bucket_size;
+    idx = std::max(0, std::min(idx, 2 * bucket_size - 1));
+    return idx;
+}
+//deberta-v2 support ed

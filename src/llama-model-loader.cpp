@@ -1311,6 +1311,72 @@ struct ggml_tensor * llama_model_loader::create_tensor_as_view(struct ggml_conte
 
     return tensor;
 }
+//deberta-v2 support bg
+void llama_model_loader::create_remaining_tensors(const llama_hparams & hparams, const buft_list_t * buft_list_cpu) {
+    if (n_created >= n_tensors) {
+        return;
+    }
+
+    auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
+        auto it = ctx_map.find(buft);
+        if (it == ctx_map.end()) {
+            int max_n_tensors = n_tensors;
+            max_n_tensors += 1;
+            max_n_tensors += hparams.n_layer*2;
+            const size_t ctx_size = ggml_tensor_overhead()*max_n_tensors;
+
+            ggml_init_params params = {
+                /*.mem_size   =*/ ctx_size,
+                /*.mem_buffer =*/ NULL,
+                /*.no_alloc   =*/ true,
+            };
+
+            ggml_context * ctx = ggml_init(params);
+            if (!ctx) {
+                throw std::runtime_error(format("failed to create ggml context"));
+            }
+
+            ctx_map.emplace(buft, ctx);
+
+            return ctx;
+        }
+        return it->second.get();
+    };
+
+    auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    ggml_backend_buffer_type_t default_buft = cpu_dev ? ggml_backend_dev_buffer_type(cpu_dev) : nullptr;
+    if (!default_buft && buft_list_cpu && !buft_list_cpu->empty()) {
+        default_buft = buft_list_cpu->back().second;
+    }
+
+    for (const auto & it : weights_map) {
+        const std::string & name = it.first;
+        bool exists = false;
+        for (const auto & pair : ctx_map) {
+            if (ggml_get_tensor(pair.second.get(), name.c_str()) != nullptr) {
+                exists = true;
+                break;
+            }
+        }
+        if (exists) {
+            continue;
+        }
+
+        ggml_tensor * t_meta = get_tensor_meta(name.c_str());
+        if (!t_meta) {
+            continue;
+        }
+
+        ggml_backend_buffer_type_t buft = default_buft;
+        GGML_ASSERT(buft != nullptr);
+
+        ggml_context * ctx = ctx_for_buft(buft);
+        struct ggml_tensor * tensor = ggml_dup_tensor(ctx, t_meta);
+        ggml_set_name(tensor, name.c_str());
+        n_created++;
+    }
+}
+//deberta-v2 support ed
 
 void llama_model_loader::done_getting_tensors() const {
     if (n_created != n_tensors) {
@@ -1557,7 +1623,8 @@ bool llama_model_loader::load_all_data(
         } else {
             const auto & file = files.at(weight->idx);
 
-            if (ggml_backend_buffer_is_host(cur->buffer)) {
+            //if (ggml_backend_buffer_is_host(cur->buffer)) {
+            if (ggml_backend_buffer_is_host(cur->buffer) && cur->data != nullptr) { //deberta-v2 support
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
                 if (check_tensors) {

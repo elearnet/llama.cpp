@@ -26,6 +26,7 @@ enum llm_arch {
     LLM_ARCH_REFACT,
     LLM_ARCH_BERT,
     LLM_ARCH_MODERN_BERT,
+    LLM_ARCH_DEBERTA,//deberta-v2 support
     LLM_ARCH_NOMIC_BERT,
     LLM_ARCH_NOMIC_BERT_MOE,
     LLM_ARCH_NEO_BERT,
@@ -350,6 +351,8 @@ enum llm_tensor {
     LLM_TENSOR_TOKEN_EMBD_NORM,
     LLM_TENSOR_TOKEN_TYPES,
     LLM_TENSOR_POS_EMBD,
+    LLM_TENSOR_REL_EMBD, //deberta-v2 support
+    LLM_TENSOR_REL_EMBD_NORM,//deberta-v2 support
     LLM_TENSOR_DENSE_2_OUT,
     LLM_TENSOR_DENSE_3_OUT,
     LLM_TENSOR_OUTPUT,

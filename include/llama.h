@@ -595,6 +595,9 @@ extern "C" {
     // Returns the total size of all the tensors in the model in bytes
     LLAMA_API uint64_t llama_model_size(const struct llama_model * model);
 
+    // Returns a tensor in the model by name, or nullptr if not found
+    LLAMA_API struct ggml_tensor * llama_model_get_tensor(const struct llama_model * model, const char * name);//deberta-v2 support
+
     // Get the default chat template. Returns nullptr if not available
     // If name is NULL, returns the default chat template
     LLAMA_API const char * llama_model_chat_template(const struct llama_model * model, const char * name);

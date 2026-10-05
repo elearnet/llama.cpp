@@ -145,6 +145,11 @@ struct llm_build_bailingmoe : public llm_graph_context {
 struct llm_build_bert : public llm_graph_context {
     llm_build_bert(const llama_model & model, const llm_graph_params & params);
 };
+//deberta-v2 support bg
+struct llm_build_deberta : public llm_graph_context {
+    llm_build_deberta(const llama_model & model, const llm_graph_params & params);
+};
+//deberta-v2 support ed
 
 struct llm_build_bitnet : public llm_graph_context {
     llm_build_bitnet(const llama_model & model, const llm_graph_params & params);

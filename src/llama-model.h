@@ -526,6 +526,11 @@ struct llama_model {
     struct ggml_tensor * pos_embd   = nullptr;
     struct ggml_tensor * tok_norm   = nullptr;
     struct ggml_tensor * tok_norm_b = nullptr;
+    //deberta-v2 support bg
+    struct ggml_tensor * rel_embd        = nullptr;
+    struct ggml_tensor * rel_embd_norm   = nullptr;
+    struct ggml_tensor * rel_embd_norm_b = nullptr;
+    //deberta-v2 support ed
 
     struct ggml_tensor * output_norm     = nullptr;
     struct ggml_tensor * output_norm_b   = nullptr;

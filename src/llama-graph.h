@@ -161,6 +161,20 @@ public:
 
     const llama_hparams hparams;
 };
+//deberta-v2 support bg
+class llm_graph_input_deberta_rel_pos : public llm_graph_input_i {
+public:
+    llm_graph_input_deberta_rel_pos(const llama_hparams & hparams) : hparams(hparams) {}
+    virtual ~llm_graph_input_deberta_rel_pos() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * c2p_idx = nullptr; // I32 [n_tokens * n_tokens]
+    ggml_tensor * p2c_idx = nullptr; // I32 [n_tokens * n_tokens]
+
+    const llama_hparams hparams;
+};
+//deberta-v2 support ed
 
 class llm_graph_input_pos_bucket_kv : public llm_graph_input_i {
 public:
@@ -887,6 +901,7 @@ struct llm_graph_context {
     ggml_tensor * build_inp_cross_embd() const;
     ggml_tensor * build_inp_pos_bucket_enc() const;
     ggml_tensor * build_inp_pos_bucket_dec() const;
+    std::pair<ggml_tensor *, ggml_tensor *> build_inp_deberta_rel_pos() const;//deberta-v2 support 
     ggml_tensor * build_pos_bias(ggml_tensor * pos_bucket, ggml_tensor * attn_rel_b) const;
 
     //
@@ -1062,3 +1077,4 @@ struct llm_graph_context {
 
 // TODO: better name
 int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buckets, bool bidirectional);
+int32_t llama_deberta_relative_position_bucket(int32_t rel_pos, int32_t bucket_size, int32_t max_position);//deberta-v2 support
